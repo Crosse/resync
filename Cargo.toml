@@ -1,0 +1,17 @@
+[package]
+name = "resync"
+version = "0.1.0"
+authors = ["Seth Wright <seth@crosse.org>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+base64 = "0.13.0"
+bytesize = "1.0.1"
+getopts = "0.2.21"
+log = "0.4.14"
+notify = "4.0.15"
+ssh2 = "0.9.1"
+stderrlog = "0.5.1"
+termion = "1.5.6"
