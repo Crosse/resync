@@ -1,8 +1,9 @@
 use std::sync::mpsc;
 use std::{error, fmt};
 
+/// The error type for Resync operations.
 #[derive(Debug)]
-pub(crate) enum Error {
+pub enum Error {
     Config(String),
     AuthFailed,
     HostKeyValidationFailed,
@@ -64,4 +65,5 @@ impl From<ssh2::Error> for Error {
     }
 }
 
-pub(crate) type Result<T> = std::result::Result<T, Error>;
+/// Alias for a [`Result`](std::result::Result) with the error type [`Error`].
+pub type Result<T> = std::result::Result<T, Error>;
