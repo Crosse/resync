@@ -36,9 +36,9 @@ pub struct Disconnected;
 impl ConnectionState for Disconnected {}
 
 struct State {
-    pub remote_host: String,
-    pub port: u16,
-    pub username: String,
+    remote_host: String,
+    port: u16,
+    username: String,
 }
 
 /// [`Resync`] takes care of connecting to a remote host via SSH, watching a
