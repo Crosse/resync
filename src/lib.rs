@@ -20,7 +20,9 @@ mod errors;
 pub use crate::errors::*;
 
 /// Describes the connection state of a [`Resync`] struct.
-pub trait ConnectionState {}
+///
+/// This trait is sealed and cannot be implemented for types outside of `resync`.
+pub trait ConnectionState: private::Sealed {}
 
 /// Describes a [`Resync`] that is connected to a host.
 pub struct Connected {
@@ -370,4 +372,11 @@ impl ssh2::KeyboardInteractivePrompt for KeyboardInteractivePrompt {
 
         responses
     }
+}
+
+mod private {
+    pub trait Sealed {}
+
+    impl Sealed for super::Connected {}
+    impl Sealed for super::Disconnected {}
 }
