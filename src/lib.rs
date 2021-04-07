@@ -39,6 +39,7 @@ struct State {
     remote_host: String,
     port: u16,
     username: String,
+    timeout: u32,
 }
 
 /// [`Resync`] takes care of connecting to a remote host via SSH, watching a
@@ -56,6 +57,7 @@ impl Resync<Disconnected> {
                 remote_host,
                 port,
                 username,
+                timeout: 30 * 1000,
             }),
             extra: Disconnected {},
         }
@@ -82,6 +84,7 @@ impl Resync<Disconnected> {
 
         debug!("setting up SSH session");
         session.set_tcp_stream(tcp);
+        session.set_timeout(state.timeout);
         session.handshake()?;
 
         check_known_host(&session, &state.remote_host, accept_host_key)?;
