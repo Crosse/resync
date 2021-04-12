@@ -39,15 +39,6 @@ fn main() {
         .init()
         .unwrap();
 
-    /*
-    let mut session = match connect(&config.host, config.port, &config.user) {
-        Ok(s) => s,
-        Err(e) => {
-            error!("cannot connect to {}: {}", config.host, e);
-            return;
-        }
-    };
-    */
     let mut resync = match Resync::new(config.host.clone(), config.port, config.user.clone())
         .connect(config.accept_host_key)
     {
