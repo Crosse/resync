@@ -54,6 +54,10 @@ fn main() {
 
     info!("connected to {}.", config.host);
 
+    if config.verbosity > 3 {
+        resync.trace_all(true);
+    }
+
     if let Err(e) = resync.watch(config.local_file, config.remote_path, config.wait) {
         error!("error during operation: {}", e);
         std::process::exit(1);
