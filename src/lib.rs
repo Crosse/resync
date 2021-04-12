@@ -187,8 +187,19 @@ impl Resync<Connected> {
             use DebouncedEvent::*;
             match rx.recv() {
                 Ok(event) => match event {
-                    NoticeRemove(ref p) => {
-                        watcher.unwatch(p)?;
+                    NoticeRemove(_) => debug!("ignoring NoticeRemove event"),
+                    Remove(ref p) => {
+                        match watcher.unwatch(p) {
+                            Ok(()) => (),
+                            Err(notify::Error::WatchNotFound) => {
+                                debug!("cannot unwatch: watch was removed");
+                            }
+                            Err(e) => {
+                                debug!("error unwatching file: {}", e);
+                                return Err(e.into());
+                            }
+                        }
+
                         while let Err(notify::Error::PathNotFound) =
                             watcher.watch(p, RecursiveMode::NonRecursive)
                         {
