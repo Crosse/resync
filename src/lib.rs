@@ -163,8 +163,19 @@ impl Resync<Connected> {
     ///
     /// `watch()` will unconditionally copy the watched file to the remote host before
     /// it starts watching for changes.
-    pub fn watch(&mut self, local_file: &str, remote_path: &str, delay: u64) -> Result<()> {
-        // XXX: verify local_file is a single file, for now!
+    pub fn watch<T: AsRef<Path>>(
+        &mut self,
+        local_file: T,
+        remote_path: T,
+        delay: u64,
+    ) -> Result<()> {
+        let local_file = local_file.as_ref();
+        let remote_path = remote_path.as_ref();
+
+        if !local_file.is_file() {
+            return Err(Error::NotAFile(local_file.display().to_string()));
+        }
+
         self.resync(local_file, remote_path)?;
 
         info!("watching local file for changes");
@@ -184,7 +195,7 @@ impl Resync<Connected> {
                             warn!("path vanished; waiting for it to return");
                             std::thread::sleep(Duration::from_secs(1));
                         }
-                        debug!("successfully rewatched {}", local_file);
+                        debug!("successfully rewatched {}", local_file.display());
                         self.resync(local_file, remote_path)?;
                     }
                     Write(_) | Create(_) => {
@@ -197,13 +208,19 @@ impl Resync<Connected> {
         }
     }
 
-    fn resync(&self, local_file: &str, remote_path: &str) -> Result<()> {
-        info!("resyncing {} => {}", local_file, remote_path);
+    fn resync<T: AsRef<Path>>(&self, local_file: T, remote_path: T) -> Result<()> {
+        let local_file = local_file.as_ref();
+        let remote_path = remote_path.as_ref();
 
-        let lpath = Path::new(local_file);
-        let mut lfile = File::open(lpath)?;
+        let mut lfile = File::open(local_file)?;
         let lmeta = lfile.metadata()?;
-        debug!("found local file");
+        debug!("found local file {}", local_file.display());
+
+        info!(
+            "resyncing {} => {}",
+            local_file.display(),
+            remote_path.display()
+        );
 
         let perms = if cfg!(unix) {
             lmeta.permissions().mode() & 0x00ff
@@ -211,12 +228,11 @@ impl Resync<Connected> {
             0o644
         };
 
-        let rpath = Path::new(remote_path);
         // TODO: at some point transfer the mtime and atime.
-        let mut rfile = self
-            .extra
-            .session
-            .scp_send(rpath, perms as i32, lmeta.len(), None)?;
+        let mut rfile =
+            self.extra
+                .session
+                .scp_send(&remote_path, perms as i32, lmeta.len(), None)?;
 
         let mut count = 0;
         let mut buf = [0u8; 4096];
@@ -245,7 +261,10 @@ impl Resync<Connected> {
 
         info!(
             "{} => {} in {:.2}s ({}/s)",
-            local_file, remote_path, end, bs
+            local_file.display(),
+            remote_path.display(),
+            end,
+            bs
         );
 
         Ok(())

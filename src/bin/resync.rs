@@ -1,6 +1,7 @@
 #![allow(clippy::field_reassign_with_default)]
 
 use std::env;
+use std::path::PathBuf;
 
 use getopts::Options;
 use log::*;
@@ -15,8 +16,8 @@ struct Config {
     host: String,
     port: u16,
     accept_host_key: bool,
-    local_file: String,
-    remote_path: String,
+    local_file: PathBuf,
+    remote_path: PathBuf,
 }
 
 fn main() {
@@ -62,7 +63,7 @@ fn main() {
 
     info!("connected to {}.", config.host);
 
-    if let Err(e) = resync.watch(&config.local_file, &config.remote_path, config.wait) {
+    if let Err(e) = resync.watch(config.local_file, config.remote_path, config.wait) {
         error!("error during operation: {}", e);
         std::process::exit(1);
     }
@@ -140,7 +141,7 @@ fn parse_args(program: &str, args: Vec<String>) -> Result<Config> {
         Err(e) => return Err(Error::Config(format!("invalid value for 'port': {}", e))),
     };
 
-    config.local_file = matches.free[0].clone();
+    config.local_file = PathBuf::from(&matches.free[0]);
 
     let remote: Vec<&str> = matches.free[1].split(':').collect();
     if remote.len() != 2 {
@@ -150,7 +151,19 @@ fn parse_args(program: &str, args: Vec<String>) -> Result<Config> {
     }
 
     config.host = remote[0].to_string();
-    config.remote_path = remote[1].to_string();
+    let rpath = remote[1].to_string();
+
+    config.remote_path = if rpath.ends_with('/') {
+        let filename = config
+            .local_file
+            .file_name()
+            .expect("no filename for local file?");
+        let mut rpath = PathBuf::from(&rpath);
+        rpath.push(filename);
+        rpath
+    } else {
+        PathBuf::from(&config.remote_path)
+    };
 
     Ok(config)
 }
