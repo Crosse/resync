@@ -353,16 +353,17 @@ fn check_known_host(session: &Session, host: &str, accept_host_key: bool) -> Res
     );
 
     let resp = if accept_host_key {
+        Some("yes".to_string())
+    } else {
         get_response(
             "Are you sure you want to continue connecting (yes/no)? ",
             false,
         )
-    } else {
-        Some("yes".to_string())
     };
 
     if let Some(r) = resp {
         if r == "yes" {
+            debug!("user accepted host key");
             known_hosts.add(host, key, host, key_type.into()).unwrap();
             known_hosts.write_file(&file, KnownHostFileKind::OpenSSH)?;
             println!(
