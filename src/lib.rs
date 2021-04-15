@@ -328,9 +328,10 @@ fn check_known_host(session: &Session, host: &str, accept_host_key: bool) -> Res
     let mut known_hosts = session.known_hosts().unwrap();
 
     let file = Path::new(&env::var("HOME").unwrap()).join(".ssh/known_hosts");
-    known_hosts
-        .read_file(&file, KnownHostFileKind::OpenSSH)
-        .unwrap();
+    match known_hosts.read_file(&file, KnownHostFileKind::OpenSSH) {
+        Ok(_) => (),
+        Err(e) => debug!("error reading {}: {}", file.display(), e),
+    }
 
     debug!("checking host key");
     let (key, key_type) = session.host_key().unwrap();
