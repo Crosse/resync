@@ -78,17 +78,23 @@ impl Resync<Disconnected> {
             state.remote_host, state.port
         );
 
+        let start = Instant::now();
         let tcp = TcpStream::connect(format!("{}:{}", state.remote_host, state.port))?;
         let mut session = Session::new()?;
-        debug!("connected.");
+        debug!("connected (took {:.2}s).", start.elapsed().as_secs_f32());
 
         debug!("setting up SSH session");
+
+        let start = Instant::now();
         session.set_tcp_stream(tcp);
         session.set_timeout(state.timeout);
         session.handshake()?;
+        debug!("handshake took {:.2}s", start.elapsed().as_secs_f32());
 
         check_known_host(&session, &state.remote_host, accept_host_key)?;
 
+        debug!("getting available auth methods");
+        let start = Instant::now();
         let methods = match session.auth_methods(&state.username) {
             Ok(m) => m,
             Err(e) => {
@@ -100,6 +106,10 @@ impl Resync<Disconnected> {
                 return Err(Error::AuthFailed);
             }
         };
+        debug!(
+            "querying auth methods took {:.2}s",
+            start.elapsed().as_secs_f32()
+        );
         debug!("auth methods supported by host: {}", methods);
 
         let methods = methods.split(',').collect::<Vec<&str>>();
