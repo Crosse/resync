@@ -256,7 +256,7 @@ impl Resync<Connected> {
                 .scp_send(&remote_path, perms as i32, lmeta.len(), None)?;
 
         let mut count = 0;
-        let mut buf = [0u8; 4096];
+        let mut buf = [0u8; 16_384];
 
         let start = Instant::now();
         while let Ok(read) = lfile.read(&mut buf) {
