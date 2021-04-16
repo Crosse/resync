@@ -265,7 +265,6 @@ impl Resync<Connected> {
             }
             match rfile.write(&buf[0..read]) {
                 Ok(written) => {
-                    trace!("wrote {} bytes", written);
                     count += written;
                     if written < read {
                         error!("short write: {} written < {} read", written, read);
