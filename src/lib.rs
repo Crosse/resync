@@ -259,17 +259,16 @@ impl Resync<Connected> {
         let mut buf = [0u8; 4096];
 
         let start = Instant::now();
-        while let Ok(b) = lfile.read(&mut buf) {
-            if b == 0 {
-                trace!("zero-byte read");
+        while let Ok(read) = lfile.read(&mut buf) {
+            if read == 0 {
                 break;
             }
-            match rfile.write(&buf[0..b]) {
+            match rfile.write(&buf[0..read]) {
                 Ok(written) => {
                     trace!("wrote {} bytes", written);
                     count += written;
-                    if written != b {
-                        error!("short write: {} read != {} written", b, written);
+                    if written < read {
+                        error!("short write: {} written < {} read", written, read);
                         break;
                     }
                 }
