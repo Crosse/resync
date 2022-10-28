@@ -14,7 +14,7 @@ use log::*;
 use notify::{watcher, DebouncedEvent, RecursiveMode, Watcher};
 use sha2::{Digest, Sha256};
 use ssh2::KnownHostFileKind;
-use ssh2::{CheckResult, HashType, Prompt, Session, TraceFlags};
+use ssh2::{CheckResult, HashType, Prompt, Session};
 use termion::input::TermRead;
 
 mod errors;
@@ -314,19 +314,6 @@ impl Resync<Connected> {
         );
 
         Ok(())
-    }
-
-    /// Enable (or disable) low-level trace output from libssh.
-    pub fn trace_all(&mut self, enable: bool) {
-        if enable {
-            let mut tf = TraceFlags::all();
-            tf.remove(TraceFlags::SOCKET);
-            tf.remove(TraceFlags::TRANS);
-            tf.remove(TraceFlags::ERROR);
-            self.extra.session.trace(tf);
-        } else {
-            self.extra.session.trace(TraceFlags::empty());
-        }
     }
 }
 
