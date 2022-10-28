@@ -96,12 +96,12 @@ fn parse_args(program: &str, args: Vec<String>) -> Result<Config> {
     };
 
     if matches.opt_present("h") {
-        print_usage(&program, opts);
+        print_usage(program, opts);
         std::process::exit(0);
     }
 
     if matches.free.len() < 2 {
-        print_usage(&program, opts);
+        print_usage(program, opts);
         return Err(Error::Config("not enough arguments".to_string()));
     }
 
