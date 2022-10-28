@@ -12,6 +12,7 @@ use std::os::unix::fs::PermissionsExt;
 use bytesize::ByteSize;
 use log::*;
 use notify::{watcher, DebouncedEvent, RecursiveMode, Watcher};
+use sha2::{Digest, Sha256};
 use ssh2::KnownHostFileKind;
 use ssh2::{CheckResult, HashType, Prompt, Session, TraceFlags};
 use termion::input::TermRead;
@@ -93,6 +94,8 @@ impl Resync<Disconnected> {
 
         check_known_host(&session, &state.remote_host, accept_host_key)?;
 
+        debug!("will use user {} for authentication", &state.username);
+
         debug!("getting available auth methods");
         let start = Instant::now();
         let methods = match session.auth_methods(&state.username) {
@@ -118,11 +121,35 @@ impl Resync<Disconnected> {
             match method {
                 "publickey" => {
                     debug!("trying publickey auth");
-                    if session.userauth_agent(&state.username).is_ok() && session.authenticated() {
-                        return Ok(Resync {
-                            state: self.state,
-                            extra: Connected { session },
-                        });
+
+                    let mut agent = session.agent()?;
+                    agent.connect()?;
+                    agent.list_identities()?;
+
+                    for pubkey in agent.identities()? {
+                        let fprint = format!(
+                            "SHA256:{}",
+                            base64::encode(Sha256::new_with_prefix(pubkey.blob()).finalize())
+                        );
+
+                        debug!("attempting publickey auth with {}", fprint);
+                        match agent.userauth(&state.username, &pubkey) {
+                            Ok(_) => {
+                                if session.authenticated() {
+                                    return Ok(Resync {
+                                        state: self.state,
+                                        extra: Connected { session },
+                                    });
+                                } else {
+                                    error!(
+                                        "publickey auth succeeded, but session not authenticated"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                debug!("publickey auth failed: {}", e)
+                            }
+                        }
                     }
                 }
                 "keyboard-interactive" => {
