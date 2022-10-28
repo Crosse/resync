@@ -132,7 +132,10 @@ fn parse_args(program: &str, args: Vec<String>) -> Result<Config> {
         Err(e) => return Err(Error::Config(format!("invalid value for 'port': {}", e))),
     };
 
-    config.local_file = PathBuf::from(&matches.free[0]);
+    let expanded = shellexpand::full(&matches.free[0])
+        .map_err(|e| Error::Config(format!("failed to parse local file: {}", e)))?;
+
+    config.local_file = std::fs::canonicalize(expanded.as_ref())?;
 
     let remote: Vec<&str> = matches.free[1].split(':').collect();
     if remote.len() != 2 {
