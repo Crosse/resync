@@ -21,9 +21,11 @@ pub(crate) fn run(
 
 // Keep watching the directory, not the inode: editors commonly replace the file.
 pub(crate) struct FileChanges {
-    _watcher: RecommendedWatcher,
+    watcher: RecommendedWatcher,
     target: PathBuf,
-    rx: Receiver<notify::Result<Event>>,
+    referent: Option<PathBuf>,
+    rx: Receiver<(Instant, notify::Result<Event>)>,
+    pending: Option<(Instant, notify::Result<Event>)>,
     debounce: Debounce,
 }
 
@@ -62,7 +64,7 @@ impl Debounce {
 
 impl FileChanges {
     pub(crate) fn new(path: &Path, delay: Duration) -> Result<Self> {
-        // Canonicalize the parent only, so a symlink/atomic-save target keeps its name.
+        // Retain the watched name for replacement events, and separately watch its referent.
         let absolute = std::env::current_dir()?.join(path);
         let target = absolute
             .parent()
@@ -74,36 +76,100 @@ impl FileChanges {
                     .ok_or_else(|| Error::NotAFile(path.display().to_string()))?,
             );
         let (tx, rx) = channel();
-        let mut watcher = notify::recommended_watcher(tx)?;
+        let mut watcher = notify::recommended_watcher(move |event| {
+            let _ = tx.send((Instant::now(), event));
+        })?;
         watcher.watch(target.parent().unwrap(), RecursiveMode::NonRecursive)?;
-        Ok(Self {
-            _watcher: watcher,
+        let mut changes = Self {
+            watcher,
             target,
+            referent: None,
             rx,
+            pending: None,
             debounce: Debounce {
                 delay,
                 deadline: None,
             },
-        })
+        };
+        changes.refresh_referent()?;
+        Ok(changes)
+    }
+
+    fn refresh_referent(&mut self) -> Result<()> {
+        let resolved = match self.target.canonicalize() {
+            Ok(path) => (path != self.target).then_some(path),
+            // Keep the referent directory watch while the file is temporarily missing.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        let name_parent = self.target.parent().unwrap();
+        let old_parent = self
+            .referent
+            .as_deref()
+            .and_then(Path::parent)
+            .filter(|p| *p != name_parent);
+        let new_parent = resolved
+            .as_deref()
+            .and_then(Path::parent)
+            .filter(|p| *p != name_parent);
+        if old_parent != new_parent {
+            if let Some(parent) = new_parent {
+                self.watcher.watch(parent, RecursiveMode::NonRecursive)?;
+            }
+            if let Some(parent) = old_parent {
+                self.watcher.unwatch(parent)?;
+            }
+        }
+        self.referent = resolved;
+        Ok(())
     }
 
     pub(crate) fn next(&mut self) -> Result<()> {
         loop {
-            let event = match self.debounce.deadline {
-                Some(deadline) => match self
-                    .rx
-                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                {
-                    Ok(event) => Some(event),
-                    Err(RecvTimeoutError::Timeout) => None,
-                    Err(RecvTimeoutError::Disconnected) => {
-                        return Err(std::sync::mpsc::RecvError.into())
-                    }
-                },
-                None => Some(self.rx.recv()?),
+            let event = if let Some(event) = self.pending.take() {
+                Some(event)
+            } else {
+                match self.debounce.deadline {
+                    Some(deadline) => match self
+                        .rx
+                        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    {
+                        Ok(event) => Some(event),
+                        Err(RecvTimeoutError::Timeout) => None,
+                        Err(RecvTimeoutError::Disconnected) => {
+                            return Err(std::sync::mpsc::RecvError.into())
+                        }
+                    },
+                    None => Some(self.rx.recv()?),
+                }
             };
-            if let Some(event) = event {
-                self.debounce.event(&self.target, event, Instant::now())?;
+            // Process everything received before the deadline, including relevant queued
+            // changes. Later traffic cannot starve an already quiet target. Retain the
+            // first later event for the next call rather than discarding it.
+            let event = match event {
+                Some((received, event))
+                    if self.debounce.deadline.is_some_and(|deadline| {
+                        received > deadline && Instant::now() >= deadline
+                    }) =>
+                {
+                    self.pending = Some((received, event));
+                    None
+                }
+                event => event,
+            };
+            if let Some((received, event)) = event {
+                let mut event = event?;
+                if event.need_rescan() || event.paths.iter().any(|p| p == &self.target) {
+                    self.refresh_referent()?;
+                }
+                if self
+                    .referent
+                    .as_ref()
+                    .is_some_and(|referent| event.paths.contains(referent))
+                {
+                    event.paths.push(self.target.clone());
+                }
+                self.debounce.event(&self.target, Ok(event), received)?;
             } else if self.debounce.ready(Instant::now()) {
                 match std::fs::metadata(&self.target) {
                     Ok(meta) if meta.is_file() => return Ok(()),
@@ -125,6 +191,147 @@ mod tests {
 
     fn event(kind: EventKind, path: &Path) -> notify::Result<Event> {
         Ok(Event::new(kind).add_path(path.to_path_buf()))
+    }
+
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "resync-regression-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn filesystem_symlink_referent_and_name_replacement() {
+        let dir = TempDir::new();
+        let referent_dir = dir.0.join("referent");
+        let other_dir = dir.0.join("other");
+        std::fs::create_dir(&referent_dir).unwrap();
+        std::fs::create_dir(&other_dir).unwrap();
+        let referent = referent_dir.join("file");
+        let other = other_dir.join("file");
+        let target = dir.0.join("link");
+        std::fs::write(&referent, "initial").unwrap();
+        std::fs::write(&other, "other").unwrap();
+        std::os::unix::fs::symlink(&referent, &target).unwrap();
+        let mut changes = FileChanges::new(&target, Duration::from_millis(50)).unwrap();
+        let (tx, rx) = channel();
+        let worker = std::thread::spawn(move || {
+            for _ in 0..8 {
+                changes.next().unwrap();
+                tx.send(()).unwrap();
+            }
+        });
+        std::fs::write(&target, "through link").unwrap();
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("write through symlink must sync");
+        std::fs::write(&referent, "direct").unwrap();
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("direct referent write must sync");
+        let replacement = referent_dir.join("replacement");
+        std::fs::write(&replacement, "atomic referent").unwrap();
+        std::fs::rename(&replacement, &referent).unwrap();
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("atomic referent replacement must sync");
+        std::fs::remove_file(&referent).unwrap();
+        assert!(rx.recv_timeout(Duration::from_millis(150)).is_err());
+        std::fs::write(&referent, "recreated referent").unwrap();
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("referent recreation must sync");
+        let replacement = dir.0.join("replacement");
+        std::os::unix::fs::symlink(&other, &replacement).unwrap();
+        std::fs::rename(&replacement, &target).unwrap();
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("symlink retarget must sync");
+        std::fs::write(&referent, "former referent must be ignored").unwrap();
+        assert!(rx.recv_timeout(Duration::from_millis(150)).is_err());
+        std::fs::write(&other, "new referent").unwrap();
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("new referent must remain watched");
+        std::fs::write(&replacement, "regular replacement").unwrap();
+        std::fs::rename(&replacement, &target).unwrap();
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("name replacement must sync");
+        std::fs::write(&target, "regular write").unwrap();
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("replacement must remain watched");
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn expired_deadline_makes_progress_with_unrelated_backlog() {
+        let dir = TempDir::new();
+        let target = dir.0.join("target");
+        std::fs::write(&target, "initial").unwrap();
+        let mut changes = FileChanges::new(&target, Duration::from_millis(50)).unwrap();
+        let (tx, rx) = channel();
+        changes.rx = rx;
+        changes.debounce.deadline = Some(Instant::now() - Duration::from_secs(1));
+        for _ in 0..100 {
+            tx.send((
+                Instant::now(),
+                event(EventKind::Create(CreateKind::File), &dir.0.join("other")),
+            ))
+            .unwrap();
+        }
+        tx.send((
+            Instant::now(),
+            Err(notify::Error::generic("sentinel after unrelated backlog")),
+        ))
+        .unwrap();
+        assert!(
+            changes.next().is_ok(),
+            "expired target deadline must not wait for the unrelated backlog to drain"
+        );
+    }
+
+    #[test]
+    fn queued_target_changes_extend_deadline_and_later_changes_are_retained() {
+        let dir = TempDir::new();
+        let target = dir.0.join("target");
+        std::fs::write(&target, "initial").unwrap();
+        let delay = Duration::from_millis(100);
+        let mut changes = FileChanges::new(&target, delay).unwrap();
+        let (tx, rx) = channel();
+        changes.rx = rx;
+        let deadline = Instant::now() - Duration::from_secs(3);
+        changes.debounce.deadline = Some(deadline);
+        let before = deadline - Duration::from_millis(50);
+        let extended = deadline + Duration::from_millis(25);
+        let later = deadline + Duration::from_secs(1);
+        tx.send((before, event(EventKind::Modify(ModifyKind::Any), &target)))
+            .unwrap();
+        tx.send((extended, event(EventKind::Modify(ModifyKind::Any), &target)))
+            .unwrap();
+        tx.send((later, event(EventKind::Modify(ModifyKind::Any), &target)))
+            .unwrap();
+        tx.send((Instant::now(), Err(notify::Error::generic("sentinel"))))
+            .unwrap();
+        changes.next().unwrap();
+        assert_eq!(
+            changes.pending.as_ref().unwrap().0,
+            later,
+            "both queued pre-deadline changes must be processed before syncing"
+        );
+        changes.next().unwrap();
+        assert!(
+            matches!(changes.next(), Err(Error::Notify(_))),
+            "later relevant event and backend error must not be discarded"
+        );
     }
 
     #[test]
@@ -151,8 +358,11 @@ mod tests {
         .unwrap();
         let (tx, rx) = channel();
         changes.rx = rx;
-        tx.send(Err(notify::Error::generic("backend failed")))
-            .unwrap();
+        tx.send((
+            Instant::now(),
+            Err(notify::Error::generic("backend failed")),
+        ))
+        .unwrap();
         assert!(matches!(changes.next(), Err(Error::Notify(_))));
         drop(tx);
         assert!(matches!(changes.next(), Err(Error::Mpsc(_))));
