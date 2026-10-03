@@ -2,7 +2,6 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
-use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 use std::{env, io};
 
@@ -11,7 +10,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use bytesize::ByteSize;
 use log::*;
-use notify::{watcher, DebouncedEvent, RecursiveMode, Watcher};
+mod watching;
 use sha2::{Digest, Sha256};
 use ssh2::KnownHostFileKind;
 use ssh2::{CheckResult, HashType, Prompt, Session};
@@ -213,47 +212,9 @@ impl Resync<Connected> {
             return Err(Error::NotAFile(local_file.display().to_string()));
         }
 
-        self.resync(local_file, remote_path)?;
-
-        info!("watching local file for changes");
-        let (tx, rx) = channel();
-        let mut watcher = watcher(tx, Duration::from_secs(delay))?;
-        watcher.watch(local_file, RecursiveMode::NonRecursive)?;
-
-        loop {
-            use DebouncedEvent::*;
-            match rx.recv() {
-                Ok(event) => match event {
-                    NoticeRemove(_) => debug!("ignoring NoticeRemove event"),
-                    Remove(ref p) => {
-                        match watcher.unwatch(p) {
-                            Ok(()) => (),
-                            Err(notify::Error::WatchNotFound) => {
-                                debug!("cannot unwatch: watch was removed");
-                            }
-                            Err(e) => {
-                                debug!("error unwatching file: {}", e);
-                                return Err(e.into());
-                            }
-                        }
-
-                        while let Err(notify::Error::PathNotFound) =
-                            watcher.watch(p, RecursiveMode::NonRecursive)
-                        {
-                            warn!("path vanished; waiting for it to return");
-                            std::thread::sleep(Duration::from_secs(1));
-                        }
-                        debug!("successfully rewatched {}", local_file.display());
-                        self.resync(local_file, remote_path)?;
-                    }
-                    Write(_) | Create(_) => {
-                        self.resync(local_file, remote_path)?;
-                    }
-                    _ => debug!("received ignored event {:?}", event),
-                },
-                Err(e) => return Err(e.into()),
-            }
-        }
+        watching::run(local_file, Duration::from_secs(delay), || {
+            self.resync(local_file, remote_path)
+        })
     }
 
     fn resync<T: AsRef<Path>>(&self, local_file: T, remote_path: T) -> Result<()> {
