@@ -249,7 +249,7 @@ mod tests {
         let mut changes = FileChanges::new(&target, Duration::from_millis(150)).unwrap();
         let (tx, rx) = channel();
         let worker = std::thread::spawn(move || {
-            for _ in 0..3 {
+            for _ in 0..4 {
                 changes.next().unwrap();
                 tx.send(Instant::now()).unwrap();
             }
@@ -276,7 +276,13 @@ mod tests {
         std::fs::write(dir.join("replacement"), "atomic").unwrap();
         std::fs::rename(dir.join("replacement"), &target).unwrap();
         rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        worker.join().unwrap();
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "atomic");
+        std::fs::write(&target, "after atomic replacement").unwrap();
+        rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "after atomic replacement"
+        );
     }
 }
